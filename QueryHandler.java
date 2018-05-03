@@ -1,12 +1,12 @@
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
+import java.sql.*;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 
 class QueryHandler implements Runnable {
     private Connection connection;
     private static final String EVENT_RATE_TABLE = "EVENT_RATE";
+    private static final String SUBS_OFFER_TABLE = "SUBSCRIBER_OFFER";
     private static final String ACCEPT_TABLE = "EPM_RATED_EVENT";
     private static final String REJECT_TABLE = "EPM_REJECTED_EVENT";
     private PreparedStatement preparedStatement;
@@ -33,17 +33,31 @@ class QueryHandler implements Runnable {
 
     private void processQuery(RatedEvent ratedEvent) {
         try {
-            String QUERY = "SELECT * FROM ( SELECT * FROM " + EVENT_RATE_TABLE + " WHERE EVENT_TYPE LIKE ? and  EFFECTIVE_DATE <= TO_DATE( ?, 'dd/mm/yyyy hh24:mi:ss') ORDER BY EFFECTIVE_DATE DESC) WHERE ROWNUM = 1";
-            preparedStatement = connection.prepareStatement(QUERY);
+            String FETCH_QUERY = "SELECT OFFER_ID, EFFECTIVE_DATE FROM ( SELECT * FROM " + SUBS_OFFER_TABLE + " WHERE SUBSCR_RESOURCE LIKE ? and EFFECTIVE_DATE <= TO_DATE( ?, 'dd/mm/yyyy hh24:mi:ss') ORDER BY EFFECTIVE_DATE DESC) WHERE ROWNUM = 1";
+            preparedStatement = connection.prepareStatement(FETCH_QUERY);
             preparedStatement.setString(1, ratedEvent.getEventType());
             preparedStatement.setString(2, ratedEvent.getEventStartTime());
             ResultSet resultSet = preparedStatement.executeQuery();
 
-            //If row exists, then insert into accepted table, else in rejected table
+            //If offer_id exists, then check in event_rate table else insert in rejected table
             if (resultSet.next()) {
-                insertAccepted(ratedEvent, resultSet);
+                String QUERY = "SELECT * FROM " + EVENT_RATE_TABLE + " WHERE EVENT_TYPE LIKE ? and EFFECTIVE_DATE = TO_DATE(?, 'dd/mm/yyyy hh24:mi:ss') and OFFER_ID = ?";
+                preparedStatement = connection.prepareStatement(QUERY);
+                DateFormat dateFormat = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss");
+                preparedStatement.setString(1, ratedEvent.getEventType());
+                preparedStatement.setString(2, dateFormat.format(resultSet.getDate("EFFECTIVE_DATE")));
+                preparedStatement.setDouble(3, resultSet.getDouble("OFFER_ID"));
+                resultSet = preparedStatement.executeQuery();
+
+                //If entry exists in event_rate then insert in accepted table, else in rejected table
+                if (resultSet.next()) {
+                    insertAccepted(ratedEvent, resultSet);
+                } else {
+                    String reason = "Cannot find the rate for the event since EVENT_START_TIME < EFFECTIVE_DATE of all entries in EVENT_RATE table";
+                    insertRejected(ratedEvent, reason);
+                }
             } else {
-                String reason = "Cannot find the rate for the event since EVENT_START_TIME < EFFECTIVE_DATE of all entries in EVENT_RATE table";
+                String reason = "Cannot find the OFFER_ID for the event";
                 insertRejected(ratedEvent, reason);
             }
 
